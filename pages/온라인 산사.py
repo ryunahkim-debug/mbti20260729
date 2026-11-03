@@ -133,7 +133,7 @@ st.markdown(
 st.markdown(f"<div class='temple-card'>{moment}</div>", unsafe_allow_html=True)
 
 tab_meditate, tab_offer, tab_chant, tab_log, tab_alarm = st.tabs(
-    ["🧘 명상", "🕯️ 불공", "📿 독경", "📖 수행 기록", "🔔 새벽 알림"]
+    ["🧘 명상", "🕯️ 불공", "📿 독경", "📖 기록", "🔔 알림"]
 )
 
 # ---------------------------------------------------------------
