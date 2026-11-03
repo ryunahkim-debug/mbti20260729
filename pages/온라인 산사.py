@@ -849,7 +849,7 @@ $('dl').onclick = () => {
   });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([out], { type: 'text/plain;charset=utf-8' }));
-  a.download = '수행일지_' + kstNow().date + '.txt';
+  a.download = 'sansa-journal_' + kstNow().date + '.txt';
   document.body.appendChild(a); a.click(); a.remove();
 };
 $('clear').onclick = () => {
