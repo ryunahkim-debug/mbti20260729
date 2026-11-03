@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import html
 import json
 import random
@@ -105,6 +107,57 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+
+# ---------------------------------------------------------------
+# 0-1. 산문(山門) 잠금 — 주인만 들어올 수 있게
+# 비밀번호는 코드가 아니라 배포 설정의 Secrets에 `sansa_password = "..."`로 넣는다.
+# 설정하지 않으면(예: 내 컴퓨터에서 실행) 잠금 없이 열린다.
+# 홈 화면 바로가기용 주소에는 비밀번호 대신 비밀번호에서 만든 열쇠(key)가 붙는다.
+# ---------------------------------------------------------------
+def _owner_password():
+    try:
+        return st.secrets.get("sansa_password")
+    except Exception:  # secrets.toml이 아예 없을 때
+        return None
+
+
+def _door_key(password: str) -> str:
+    return hashlib.sha256(f"online-sansa:{password}".encode()).hexdigest()[:32]
+
+
+def open_temple_gate() -> None:
+    password = _owner_password()
+    if not password or st.session_state.get("sansa_owner"):
+        return
+
+    key = _door_key(str(password))
+    if hmac.compare_digest(st.query_params.get("key", "").encode(), key.encode()):
+        st.session_state.sansa_owner = True
+        return
+
+    st.title("🪷 새벽 산사")
+    st.markdown(
+        "<div class='temple-card' style='text-align:center;'>🔒 산문이 닫혀 있어요.<br>"
+        "<span class='quiet'>이 산사의 주인만 들어올 수 있어요.</span></div>",
+        unsafe_allow_html=True,
+    )
+    with st.form("gate"):
+        typed = st.text_input("비밀번호", type="password")
+        remember = st.checkbox("이 기기에서 기억하기 (홈 화면 바로가기용 주소 만들기)", value=True)
+        entered = st.form_submit_button("🙏 들어가기", type="primary")
+    if entered:
+        if hmac.compare_digest(typed.encode(), str(password).encode()):
+            st.session_state.sansa_owner = True
+            if remember:
+                st.query_params["key"] = key
+            st.rerun()
+        else:
+            st.error("비밀번호가 맞지 않아요.")
+    st.stop()
+
+
+open_temple_gate()
 
 # ---------------------------------------------------------------
 # 1. 지금 산사의 시간 (한국 시간 기준)
