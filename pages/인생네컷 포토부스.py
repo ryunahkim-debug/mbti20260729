@@ -9,7 +9,7 @@ from datetime import datetime
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 st.set_page_config(page_title="인생네컷 포토부스", page_icon="📸", layout="centered")
 
@@ -20,28 +20,59 @@ DPI = 300                      # 사진 인화 해상도
 SHEET_W, SHEET_H = 1200, 1800  # 4x6 inch (300dpi) 인화지 한 장
 SHOTS = 4                      # 네 컷
 
-THEMES = {
-    "클래식 블랙 🖤": {"bg": "#111111", "text": "#FFFFFF", "accent": "#FFD84D"},
-    "깔끔 화이트 🤍": {"bg": "#FFFFFF", "text": "#222222", "accent": "#FF7AA2"},
-    "러블리 핑크 🩷": {"bg": "#FFC8DD", "text": "#7A1F45", "accent": "#FFFFFF"},
-    "하늘 블루 🩵": {"bg": "#BDE0FE", "text": "#1D3557", "accent": "#FFFFFF"},
-    "민트 초코 🍃": {"bg": "#B9F3E4", "text": "#3E2723", "accent": "#6D4C41"},
+# 색상 팔레트: bg(배경), bg2(보조 배경), ink(글자), accent(포인트)
+PALETTES = {
+    "블랙 🖤": {"bg": "#141414", "bg2": "#2B2B2B", "ink": "#FFFFFF", "accent": "#FFB648"},
+    "화이트 🤍": {"bg": "#FAFAF7", "bg2": "#ECE9E2", "ink": "#1E1E1E", "accent": "#FF6F91"},
+    "베이비 핑크 🩷": {"bg": "#FFD3E2", "bg2": "#FFF1F6", "ink": "#8A2C52", "accent": "#FF5C8A"},
+    "스카이 블루 🩵": {"bg": "#C9E3FF", "bg2": "#F0F7FF", "ink": "#1F3A68", "accent": "#4D8DFF"},
+    "버터 옐로 💛": {"bg": "#FFEFA8", "bg2": "#FFFAE3", "ink": "#6B4A00", "accent": "#FF9F1C"},
+    "라벤더 💜": {"bg": "#DDD0FF", "bg2": "#F5F0FF", "ink": "#4B2E83", "accent": "#9B6BFF"},
+    "민트 🍃": {"bg": "#C6F2E2", "bg2": "#EEFFF8", "ink": "#1F5A46", "accent": "#21B088"},
     "직접 고르기 🎨": None,
 }
 
-FONT_CANDIDATES = [
-    # Linux / Streamlit Cloud (packages.txt 의 fonts-nanum)
-    "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
-    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    # Windows
-    "C:/Windows/Fonts/malgunbd.ttf",
-    "C:/Windows/Fonts/malgun.ttf",
-    # macOS
-    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-    "/Library/Fonts/AppleGothic.ttf",
-]
+# 프레임 스타일
+STYLES = {
+    "베이직 ✨": "basic",
+    "필름 🎞️": "film",
+    "스티커 🎀": "sticker",
+    "체크 패턴 🧺": "check",
+    "미니멀 🤍": "minimal",
+}
+
+FONT_CANDIDATES = {
+    "title": [
+        # Linux / Streamlit Cloud (packages.txt 의 fonts-nanum)
+        "/usr/share/fonts/truetype/nanum/NanumSquareRoundEB.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumSquareRoundB.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumSquareEB.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothicExtraBold.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Black.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        # Windows / macOS
+        "C:/Windows/Fonts/malgunbd.ttf",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ],
+    "body": [
+        "/usr/share/fonts/truetype/nanum/NanumSquareRoundB.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumSquareRoundR.ttf",
+        "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "C:/Windows/Fonts/malgun.ttf",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    ],
+    "mono": [  # 날짜 스탬프용 (숫자만 쓰므로 영문 글꼴)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "C:/Windows/Fonts/consolab.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
+    ],
+}
+
+K = 2  # 2배 크기로 그린 뒤 줄여서 테두리를 매끄럽게
 
 
 def hex_to_rgb(h: str):
@@ -49,109 +80,323 @@ def hex_to_rgb(h: str):
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
+def mix(c1, c2, t):
+    """두 색을 t 비율(0~1)로 섞기"""
+    a, b = hex_to_rgb(c1) if isinstance(c1, str) else c1, hex_to_rgb(c2) if isinstance(c2, str) else c2
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
 @st.cache_resource
-def find_font_path():
-    for p in FONT_CANDIDATES:
+def find_font_path(role: str):
+    for p in FONT_CANDIDATES[role]:
         if os.path.exists(p):
             return p
+    if role == "mono":
+        return find_font_path("body")
+    if role == "title":
+        return find_font_path("body")
     return None
 
 
-def get_font(size: int):
-    path = find_font_path()
+def get_font(size: int, role: str = "body"):
+    path = find_font_path(role)
     if path:
-        return ImageFont.truetype(path, size)
-    return ImageFont.load_default(size=size)
+        return ImageFont.truetype(path, int(size))
+    return ImageFont.load_default(size=int(size))
 
 
-def draw_center_text(draw, text, cx, y, font, fill):
+def text_size(font, text, tracking=0):
+    b = font.getbbox(text)
+    if tracking:
+        return sum(font.getlength(ch) for ch in text) + tracking * max(len(text) - 1, 0), b
+    return b[2] - b[0], b
+
+
+def draw_text_center(draw, text, cx, top, font, fill, tracking=0):
+    """top 위치에 가운데 정렬로 글자 쓰기 (tracking = 자간)"""
     if not text:
-        return
-    bbox = draw.textbbox((0, 0), text, font=font)
-    w = bbox[2] - bbox[0]
-    draw.text((cx - w / 2, y), text, font=font, fill=fill)
+        return 0
+    w, b = text_size(font, text, tracking)
+    h = font.getbbox("가Ag")[3] - font.getbbox("가Ag")[1]
+    x = cx - w / 2
+    if tracking:
+        for ch in text:
+            draw.text((x, top - font.getbbox("가Ag")[1]), ch, font=font, fill=fill)
+            x += font.getlength(ch) + tracking
+    else:
+        draw.text((x - b[0], top - font.getbbox("가Ag")[1]), text, font=font, fill=fill)
+    return h
 
 
-def fit_font(draw, text, max_w, start_size, min_size=18):
-    size = start_size
+def fit_font(text, max_w, start, role="title", tracking=0, min_size=14):
+    size = start
     while size > min_size:
-        f = get_font(size)
-        b = draw.textbbox((0, 0), text, font=f)
-        if b[2] - b[0] <= max_w:
+        f = get_font(size, role)
+        if text_size(f, text, tracking)[0] <= max_w:
             return f
         size -= 2
-    return get_font(min_size)
+    return get_font(min_size, role)
 
 
-def draw_sparkles(draw, w, h, color, area_top, area_bottom):
-    """프레임 하단에 작은 별/점 장식"""
-    import random
+# ---- 장식 도형 ---------------------------------------------------------------
+def heart_points(cx, cy, size):
+    import math
+    pts = []
+    for i in range(60):
+        t = 2 * math.pi * i / 60
+        x = 16 * math.sin(t) ** 3
+        y = -(13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t))
+        pts.append((cx + x * size / 34, cy + y * size / 34))
+    return pts
 
-    rnd = random.Random(42)
-    side = max(40, w // 12)  # 글자와 겹치지 않도록 좌우 가장자리에만
-    for i in range(14):
-        x = rnd.randint(12, side) if i % 2 == 0 else rnd.randint(w - side, w - 12)
-        y = rnd.randint(area_top, area_bottom)
-        r = rnd.choice([3, 4, 6])
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=color)
+
+def star_points(cx, cy, r, n=5, inner=0.45, rot=-90):
+    import math
+    pts = []
+    for i in range(n * 2):
+        rr = r if i % 2 == 0 else r * inner
+        a = math.radians(rot + 180 * i / n)
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+    return pts
 
 
-def make_strip(photos, theme, title, subtitle, show_date, mirror):
-    """세로형 1x4 스트립 (2x6 inch = 600x1800 px)"""
-    W, H = SHEET_W // 2, SHEET_H
-    margin, gap, footer = 30, 18, 230
-    cell_w = W - margin * 2
-    cell_h = (H - margin - footer - gap * (SHOTS - 1)) // SHOTS
+def sticker(draw, kind, cx, cy, size, color, outline=(255, 255, 255)):
+    """흰 테두리가 있는 스티커 느낌의 하트/별/반짝이"""
+    if kind == "heart":
+        draw.polygon(heart_points(cx, cy, size * 1.25), fill=outline)
+        draw.polygon(heart_points(cx, cy, size), fill=color)
+    elif kind == "star":
+        draw.polygon(star_points(cx, cy, size * 0.75, inner=0.5), fill=outline)
+        draw.polygon(star_points(cx, cy, size * 0.55, inner=0.45), fill=color)
+    elif kind == "sparkle":
+        draw.polygon(star_points(cx, cy, size * 0.6, n=4, inner=0.22), fill=color)
+    elif kind == "dot":
+        r = size * 0.18
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=color)
 
-    img = Image.new("RGB", (W, H), hex_to_rgb(theme["bg"]))
-    draw = ImageDraw.Draw(img)
 
-    for i, p in enumerate(photos):
-        ph = ImageOps.fit(p, (cell_w, cell_h), method=Image.LANCZOS, centering=(0.5, 0.45))
+def rounded_mask(size, radius):
+    m = Image.new("L", size, 0)
+    ImageDraw.Draw(m).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=255)
+    return m
+
+
+def paste_shadow(canvas, box, radius, blur, offset, alpha=70):
+    x0, y0, x1, y1 = box
+    pad = blur * 3
+    sh = Image.new("RGBA", (x1 - x0 + pad * 2, y1 - y0 + pad * 2), (0, 0, 0, 0))
+    ImageDraw.Draw(sh).rounded_rectangle((pad, pad, pad + x1 - x0, pad + y1 - y0),
+                                         radius=radius, fill=(0, 0, 0, alpha))
+    sh = sh.filter(ImageFilter.GaussianBlur(blur))
+    canvas.alpha_composite(sh, (x0 - pad + offset, y0 - pad + offset))
+
+
+# ---- 프레임 합성 -------------------------------------------------------------
+def layout_cells(layout, style):
+    """기본 해상도(300dpi) 기준 사진 칸 위치와 하단 글자 영역 계산"""
+    if layout == "strip":
+        W, H = SHEET_W // 2, SHEET_H
+        side = 62 if style == "film" else 34
+        top, gap, footer = (40 if style == "film" else 34), 18, 250
+        cw = W - side * 2
+        ch = (H - top - footer - gap * (SHOTS - 1)) // SHOTS
+        cells = [(side, top + i * (ch + gap), side + cw, top + i * (ch + gap) + ch) for i in range(SHOTS)]
+        foot = (cells[-1][3], H)
+    else:
+        W, H = SHEET_W, SHEET_H
+        side = 84 if style == "film" else 56
+        top, gap, footer = 56, 26, 330
+        cw = (W - side * 2 - gap) // 2
+        ch = (H - top - footer - gap) // 2
+        cells = []
+        for i in range(SHOTS):
+            r, c = divmod(i, 2)
+            x0, y0 = side + c * (cw + gap), top + r * (ch + gap)
+            cells.append((x0, y0, x0 + cw, y0 + ch))
+        foot = (cells[-1][3], H)
+    return W, H, cells, foot
+
+
+def draw_background(canvas, style, pal, W, H):
+    d = ImageDraw.Draw(canvas)
+    if style == "sticker":
+        # 위→아래 부드러운 그라데이션
+        top, bot = hex_to_rgb(pal["bg2"]), hex_to_rgb(pal["bg"])
+        for y in range(H):
+            d.line([(0, y), (W, y)], fill=mix(top, bot, y / H))
+    elif style == "check":
+        canvas.paste(hex_to_rgb(pal["bg2"]), (0, 0, W, H))
+        band = 26 * K
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        col = hex_to_rgb(pal["bg"]) + (150,)
+        for x in range(0, W, band * 2):
+            ld.rectangle((x, 0, x + band - 1, H), fill=col)
+        canvas.alpha_composite(layer)
+        layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        ld = ImageDraw.Draw(layer)
+        for y in range(0, H, band * 2):
+            ld.rectangle((0, y, W, y + band - 1), fill=col)
+        canvas.alpha_composite(layer)
+    else:
+        canvas.paste(hex_to_rgb(pal["bg"]), (0, 0, W, H))
+
+
+def draw_film_holes(draw, pal, W, H, side):
+    hole = mix(pal["bg"], pal["ink"], 0.85) if sum(hex_to_rgb(pal["bg"])) < 384 else mix(pal["bg"], "#000000", 0.75)
+    hw, hh, step = int(side * 0.38), int(side * 0.26), int(side * 0.62)
+    for x in (side * 0.5, W - side * 0.5):
+        y = step * 0.6
+        while y < H - hh:
+            draw.rounded_rectangle((x - hw / 2, y, x + hw / 2, y + hh), radius=hh * 0.3, fill=hole)
+            y += step
+
+
+def compose_frame(photos, layout, style, pal, title, subtitle, show_date, mirror):
+    W0, H0, cells0, foot0 = layout_cells(layout, style)
+    W, H = W0 * K, H0 * K
+    cells = [tuple(v * K for v in c) for c in cells0]
+    foot_top, foot_bot = foot0[0] * K, foot0[1] * K
+    s = (W0 / 600) * K  # 사진 테두리 배율 (스트립 = 1, 격자 = 2)
+    ts = (1.0 if layout == "strip" else 1.45) * K  # 글자·스티커 배율
+
+    canvas = Image.new("RGBA", (W, H))
+    draw_background(canvas, style, pal, W, H)
+    draw = ImageDraw.Draw(canvas)
+
+    if style == "film":
+        draw_film_holes(draw, pal, W, H, cells[0][0])
+
+    # 스타일별 사진 처리
+    radius = {"basic": 14, "film": 0, "sticker": 26, "check": 6, "minimal": 0}[style] * s
+    border = {"basic": 0, "film": 0, "sticker": 9, "check": 10, "minimal": 0}[style] * s
+    shadow = style in ("sticker", "check", "basic")
+
+    for i, (x0, y0, x1, y1) in enumerate(cells):
+        x0, y0, x1, y1 = map(int, (x0, y0, x1, y1))
+        if shadow:
+            paste_shadow(canvas, (x0, y0, x1, y1), int(radius + border), int(7 * s), int(4 * s),
+                         alpha=55 if style != "basic" else 35)
+        if border:
+            draw.rounded_rectangle((x0, y0, x1, y1), radius=radius + border, fill=(255, 255, 255))
+        ix0, iy0, ix1, iy1 = int(x0 + border), int(y0 + border), int(x1 - border), int(y1 - border)
+        ph = ImageOps.fit(photos[i], (ix1 - ix0, iy1 - iy0), method=Image.LANCZOS, centering=(0.5, 0.42))
         if mirror:
             ph = ImageOps.mirror(ph)
-        y = margin + i * (cell_h + gap)
-        img.paste(ph, (margin, y))
+        if radius:
+            canvas.paste(ph, (ix0, iy0), rounded_mask(ph.size, int(radius)))
+        else:
+            canvas.paste(ph, (ix0, iy0))
+        if style == "minimal":
+            draw.rectangle((ix0, iy0, ix1 - 1, iy1 - 1), outline=hex_to_rgb(pal["ink"]), width=max(1, int(1.5 * s)))
 
-    foot_top = margin + SHOTS * cell_h + (SHOTS - 1) * gap
-    draw_sparkles(draw, W, H, hex_to_rgb(theme["accent"]), foot_top + 15, H - 15)
-    tf = fit_font(draw, title, W - 60, 64)
-    draw_center_text(draw, title, W / 2, foot_top + 45, tf, hex_to_rgb(theme["text"]))
-    sf = fit_font(draw, subtitle, W - 60, 34)
-    draw_center_text(draw, subtitle, W / 2, foot_top + 125, sf, hex_to_rgb(theme["text"]))
-    if show_date:
-        df = get_font(26)
-        draw_center_text(draw, datetime.now().strftime("%Y.%m.%d"), W / 2, foot_top + 172,
-                         df, hex_to_rgb(theme["text"]))
-    return img
+    # 스티커 장식 (사진 모서리에 살짝 걸치게)
+    if style == "sticker":
+        acc, ink = hex_to_rgb(pal["accent"]), hex_to_rgb(pal["ink"])
+        white = mix(pal["accent"], "#FFFFFF", 0.35)  # 반짝이 색
+        c = cells
+        deco = [
+            ("heart", c[0][2] - 6 * ts, c[0][1] + 8 * ts, 46 * ts, acc),
+            ("sparkle", c[0][0] + 4 * ts, c[0][1] + 2 * ts, 40 * ts, white),
+            ("star", c[1][0] + 6 * ts, c[1][3] - 6 * ts, 52 * ts, hex_to_rgb("#FFD84D")),
+            ("heart", c[2][2] - 10 * ts, c[2][3] - 4 * ts, 38 * ts, acc),
+            ("sparkle", c[3][2] - 2 * ts, c[3][1] + 10 * ts, 34 * ts, white),
+            ("star", c[3][0] + 8 * ts, c[3][3] - 2 * ts, 40 * ts, acc),
+        ]
+        if layout == "grid":
+            deco = [
+                ("heart", c[0][2] - 10 * ts, c[0][1] + 10 * ts, 40 * ts, acc),
+                ("sparkle", c[0][0] + 6 * ts, c[0][3] - 6 * ts, 34 * ts, white),
+                ("star", c[1][2] - 8 * ts, c[1][3] - 8 * ts, 44 * ts, hex_to_rgb("#FFD84D")),
+                ("heart", c[2][0] + 10 * ts, c[2][1] + 10 * ts, 32 * ts, acc),
+                ("sparkle", c[3][2] - 6 * ts, c[3][1] + 8 * ts, 32 * ts, white),
+                ("star", c[3][0] + 8 * ts, c[3][3] - 6 * ts, 36 * ts, acc),
+            ]
+        for kind, x, y, size, col in deco:
+            sticker(draw, kind, x, y, size, col)
+        # 하단 양옆 작은 장식
+        fy = (foot_top + foot_bot) / 2
+        for kind, dx, dy, size, col in [("heart", 44, -30, 26, acc), ("sparkle", 70, 26, 22, ink),
+                                         ("dot", 30, 40, 30, acc)]:
+            sticker(draw, kind, dx * ts, fy + dy * ts, size * ts, col)
+            sticker(draw, kind, W - dx * ts, fy - dy * ts, size * ts, col)
+
+    # ---- 하단 글자 영역 ----
+    ink, acc = hex_to_rgb(pal["ink"]), hex_to_rgb(pal["accent"])
+    cx = W / 2
+    max_w = W - 90 * ts
+    date_txt = datetime.now().strftime("%Y.%m.%d")
+
+    if style == "check":
+        # 흰색 라벨 카드 위에 글자
+        lx0, ly0 = cells[0][0], foot_top + 26 * ts
+        lx1, ly1 = cells[0][0] + (cells[-1][2] - cells[0][0]), foot_bot - 34 * ts
+        paste_shadow(canvas, (int(lx0), int(ly0), int(lx1), int(ly1)), int(18 * ts), int(6 * ts), int(3 * ts), 45)
+        draw.rounded_rectangle((lx0, ly0, lx1, ly1), radius=18 * ts, fill=(255, 255, 255))
+        draw.rounded_rectangle((lx0 + 8 * ts, ly0 + 8 * ts, lx1 - 8 * ts, ly1 - 8 * ts), radius=12 * ts,
+                               outline=acc, width=int(2.5 * ts))
+        foot_top, foot_bot = ly0, ly1
+        max_w = (lx1 - lx0) - 50 * ts
+        ink = hex_to_rgb(pal["ink"]) if sum(hex_to_rgb(pal["ink"])) < 600 else (40, 40, 40)
+
+    lines = []  # (text, font, color, tracking, gap_before)
+    if style == "minimal":
+        t = title.upper()
+        tf = fit_font(t, max_w, 40 * ts, "title", tracking=10 * ts)
+        lines.append((t, tf, ink, 10 * ts, 0))
+        lines.append(("__rule__", None, ink, 0, 18 * ts))
+        if subtitle:
+            lines.append((subtitle, fit_font(subtitle, max_w, 24 * ts, "body"), ink, 0, 18 * ts))
+        if show_date:
+            lines.append((date_txt, get_font(19 * ts, "mono"), mix(pal["ink"], pal["bg"], 0.35), 4 * ts, 12 * ts))
+    elif style == "film":
+        tf = fit_font(title, max_w, 54 * ts, "title")
+        lines.append((title, tf, ink, 0, 0))
+        if subtitle:
+            lines.append((subtitle, fit_font(subtitle, max_w, 26 * ts, "body"), mix(pal["ink"], pal["bg"], 0.2), 0, 16 * ts))
+        if show_date:
+            stamp = datetime.now().strftime("'%y %m %d")
+            lines.append((stamp, get_font(28 * ts, "mono"), acc, 2 * ts, 16 * ts))
+    else:
+        tf = fit_font(title, max_w, 58 * ts, "title")
+        lines.append((title, tf, ink, 0, 0))
+        if subtitle:
+            lines.append((subtitle, fit_font(subtitle, max_w, 28 * ts, "body"), ink, 0, 14 * ts))
+        if show_date:
+            lines.append((date_txt, get_font(20 * ts, "mono"), acc if style != "check" else hex_to_rgb(pal["accent"]),
+                          3 * ts, 14 * ts))
+
+    def line_h(item):
+        text, font, *_ = item
+        if text == "__rule__":
+            return 2 * ts
+        b = font.getbbox("가Ag")
+        return b[3] - b[1]
+
+    total = sum(line_h(l) + l[4] for l in lines)
+    y = foot_top + (foot_bot - foot_top - total) / 2
+    for item in lines:
+        text, font, color, tracking, gap = item
+        y += gap
+        if text == "__rule__":
+            draw.line([(cx - 40 * ts, y), (cx + 40 * ts, y)], fill=color, width=max(1, int(2 * ts)))
+        else:
+            draw_text_center(draw, text, cx, y, font, color, tracking)
+        y += line_h(item)
+
+    return canvas.convert("RGB").resize((W0, H0), Image.LANCZOS)
 
 
-def make_grid(photos, theme, title, subtitle, show_date, mirror):
-    """2x2 격자형 (4x6 inch = 1200x1800 px)"""
-    W, H = SHEET_W, SHEET_H
-    margin, gap, footer = 50, 26, 330
-    cell_w = (W - margin * 2 - gap) // 2
-    cell_h = (H - margin - footer - gap) // 2
-
-    img = Image.new("RGB", (W, H), hex_to_rgb(theme["bg"]))
-    draw = ImageDraw.Draw(img)
-    for i, p in enumerate(photos):
-        ph = ImageOps.fit(p, (cell_w, cell_h), method=Image.LANCZOS, centering=(0.5, 0.45))
-        if mirror:
-            ph = ImageOps.mirror(ph)
-        r, c = divmod(i, 2)
-        img.paste(ph, (margin + c * (cell_w + gap), margin + r * (cell_h + gap)))
-
-    foot_top = margin + 2 * cell_h + gap
-    draw_sparkles(draw, W, H, hex_to_rgb(theme["accent"]), foot_top + 20, H - 20)
-    tf = fit_font(draw, title, W - 100, 96)
-    draw_center_text(draw, title, W / 2, foot_top + 55, tf, hex_to_rgb(theme["text"]))
-    sf = fit_font(draw, subtitle, W - 100, 48)
-    draw_center_text(draw, subtitle, W / 2, foot_top + 175, sf, hex_to_rgb(theme["text"]))
-    if show_date:
-        draw_center_text(draw, datetime.now().strftime("%Y.%m.%d"), W / 2, foot_top + 245,
-                         get_font(36), hex_to_rgb(theme["text"]))
-    return img
+def placeholder_photos(n):
+    """미리보기용 빈 칸 (번호가 적힌 회색 사진)"""
+    out = []
+    for i in range(n):
+        im = Image.new("RGB", (800, 600), (214, 214, 218))
+        d = ImageDraw.Draw(im)
+        f = get_font(150, "title")
+        draw_text_center(d, str(i + 1), 400, 220, f, (170, 170, 178))
+        out.append(im)
+    return out
 
 
 def make_print_sheet(frame_img, layout):
@@ -275,23 +520,32 @@ with st.expander("🎨 1단계: 프레임 꾸미기", expanded=not photos):
     c1, c2 = st.columns(2)
     with c1:
         layout_label = st.radio("레이아웃", ["세로 네컷 (1x4)", "격자 네컷 (2x2)"], horizontal=False)
-        theme_name = st.selectbox("프레임 색상", list(THEMES.keys()))
+        style_name = st.selectbox("프레임 스타일", list(STYLES.keys()))
+        palette_name = st.selectbox("프레임 색상", list(PALETTES.keys()))
     with c2:
         title = st.text_input("프레임 제목", value="LIFE 4 CUTS")
         subtitle = st.text_input("한 줄 문구", value="우리 MBTI 찰떡 케미", help="이모지는 인쇄 글꼴에서 깨질 수 있어요.")
         show_date = st.checkbox("날짜 넣기", value=True)
         mirror = st.checkbox("좌우 반전 (거울 모드)", value=False)
-    if THEMES[theme_name] is None:
+    if PALETTES[palette_name] is None:
         cc1, cc2, cc3 = st.columns(3)
-        theme = {
-            "bg": cc1.color_picker("배경색", "#FFE5EC"),
-            "text": cc2.color_picker("글자색", "#333333"),
+        bg = cc1.color_picker("배경색", "#FFE5EC")
+        palette = {
+            "bg": bg,
+            "bg2": "#{:02X}{:02X}{:02X}".format(*mix(bg, "#FFFFFF", 0.6)),
+            "ink": cc2.color_picker("글자색", "#333333"),
             "accent": cc3.color_picker("포인트색", "#FF4B6E"),
         }
     else:
-        theme = THEMES[theme_name]
+        palette = PALETTES[palette_name]
 
 layout = "strip" if "1x4" in layout_label else "grid"
+
+if len(photos) < SHOTS:
+    with st.expander("👀 프레임 미리보기", expanded=not photos):
+        filled = photos + placeholder_photos(SHOTS)[len(photos):]
+        preview = compose_frame(filled, layout, STYLES[style_name], palette, title, subtitle, show_date, mirror)
+        st.image(preview, width=220 if layout == "strip" else 360)
 
 # --- 2. 촬영 ---------------------------------------------------------------
 st.subheader(f"📷 2단계: 사진 찍기 ({len(photos)}/{SHOTS})")
@@ -351,8 +605,7 @@ if len(photos) == SHOTS:
     st.markdown("---")
     st.subheader("🎉 3단계: 완성! 출력하기")
 
-    maker = make_strip if layout == "strip" else make_grid
-    frame = maker(photos, theme, title, subtitle, show_date, mirror)
+    frame = compose_frame(photos, layout, STYLES[style_name], palette, title, subtitle, show_date, mirror)
     sheet = make_print_sheet(frame, layout)
 
     st.image(frame, caption="완성된 인생네컷", width=320 if layout == "strip" else 480)
