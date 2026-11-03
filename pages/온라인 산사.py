@@ -1,11 +1,67 @@
 import html
+import json
 import random
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 st.set_page_config(page_title="온라인 산사", page_icon="🪷", layout="centered")
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def render_html(src: str, height: int) -> None:
+    """HTML+JS를 iframe으로 그린다 (Streamlit 신·구버전 모두 지원)."""
+    if hasattr(st, "iframe"):
+        st.iframe(src, height=height)
+    else:
+        import streamlit.components.v1 as components
+
+        components.html(src, height=height)
+
+
+def js_value(value) -> str:
+    """파이썬 값을 <script> 안에 안전하게 넣을 수 있는 JS 리터럴로 바꾼다."""
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
+# ---------------------------------------------------------------
+# 수행 기록 저장소
+# 기록은 각자의 브라우저(localStorage)에만 저장되어, 창을 닫아도 날마다 쌓이고
+# 다른 사람에게는 보이지 않는다. 모든 iframe이 같은 키를 함께 쓴다.
+# ---------------------------------------------------------------
+STORE_JS = """
+const SANSA_KEY = 'online_sansa_log_v1';
+function kstNow() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(new Date());
+  const p = Object.fromEntries(parts.map(x => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour === '24' ? '00' : p.hour}:${p.minute}` };
+}
+function loadLog() {
+  try { return JSON.parse(localStorage.getItem(SANSA_KEY) || '[]'); } catch (e) { return []; }
+}
+function saveEntry(entry) {
+  try {
+    const log = loadLog();
+    if (log.some(x => x.id === entry.id)) return;   // 같은 기록을 두 번 넣지 않음
+    const t = kstNow();
+    log.push(Object.assign({ date: t.date, time: t.time }, entry));
+    localStorage.setItem(SANSA_KEY, JSON.stringify(log));
+  } catch (e) { /* 저장이 막힌 브라우저(시크릿 창 등)에서는 조용히 넘어감 */ }
+}
+"""
+
+
+def record(kind: str, text: str, minutes: int = 0) -> None:
+    """버튼을 누른 그 순간의 수행을 브라우저 저장소에 한 줄 추가한다."""
+    entry = {"id": uuid.uuid4().hex, "kind": kind, "text": text, "minutes": minutes}
+    render_html(f"<script>{STORE_JS}\nsaveEntry({js_value(entry)});</script>", height=1)
+
 
 # ---------------------------------------------------------------
 # 0. 고요한 새벽 분위기 (색감 / 글꼴)
@@ -25,7 +81,7 @@ st.markdown(
     }
     [data-testid="stMain"] header, [data-testid="stHeader"] { background: transparent; }
     [data-testid="stMain"] .stButton button:not([kind="primary"]),
-    [data-testid="stMain"] .stDownloadButton button {
+    [data-testid="stMain"] .stDownloadButton button:not([kind="primary"]) {
         background: rgba(255, 255, 255, 0.06);
         border: 1px solid rgba(232, 226, 214, 0.35);
     }
@@ -43,6 +99,7 @@ st.markdown(
         line-height: 2.2;
         letter-spacing: 0.04em;
     }
+    .sutra h4 { color: #f3d9a4; margin: 1.4rem 0 0.4rem; font-size: 1.05rem; }
     .quiet { color: #b8ae9c !important; font-size: 0.92rem; }
     </style>
     """,
@@ -52,7 +109,7 @@ st.markdown(
 # ---------------------------------------------------------------
 # 1. 지금 산사의 시간 (한국 시간 기준)
 # ---------------------------------------------------------------
-now = datetime.now(ZoneInfo("Asia/Seoul"))
+now = datetime.now(KST)
 hour = now.hour
 
 if 3 <= hour < 4:
@@ -75,22 +132,20 @@ st.markdown(
 )
 st.markdown(f"<div class='temple-card'>{moment}</div>", unsafe_allow_html=True)
 
-# 세션 동안의 수행 기록
-if "practice_log" not in st.session_state:
-    st.session_state.practice_log = []
-
-tab_meditate, tab_offer, tab_chant, tab_log = st.tabs(
-    ["🧘 명상", "🕯️ 불공 드리기", "📿 독경", "📖 오늘의 기록"]
+tab_meditate, tab_offer, tab_chant, tab_log, tab_alarm = st.tabs(
+    ["🧘 명상", "🕯️ 불공", "📿 독경", "📖 수행 기록", "🔔 새벽 알림"]
 )
 
 # ---------------------------------------------------------------
 # 2. 명상 — 타종으로 시작하고 끝나는 타이머 (소리는 브라우저에서 합성)
+#    끝까지 앉으면(또는 1분 이상 앉았다 멈추면) 수행 기록에 자동으로 남는다.
 # ---------------------------------------------------------------
 with tab_meditate:
     st.subheader("🧘 고요히 앉기")
     st.markdown(
         "<p class='quiet'>허리를 곧게 펴고 편히 앉으세요. 시작하면 종이 세 번 울리고, "
-        "시간이 다 되면 다시 종이 울립니다. 원이 커질 때 들이쉬고, 작아질 때 내쉬어요.</p>",
+        "시간이 다 되면 다시 종이 울립니다. 원이 커질 때 들이쉬고, 작아질 때 내쉬어요. "
+        "앉은 시간은 수행 기록에 저절로 남아요.</p>",
         unsafe_allow_html=True,
     )
 
@@ -111,9 +166,10 @@ with tab_meditate:
               padding:10px 28px;font-size:16px;cursor:pointer;font-family:inherit;">🔔 입정 (시작)</button>
     </div>
     <script>
+    {STORE_JS}
     const TOTAL = {minutes} * 60;
     const USE_MOKTAK = {str(moktak).lower()};
-    let ctx = null, timer = null, breath = null, endAt = 0, running = false;
+    let ctx = null, timer = null, breath = null, startedAt = 0, endAt = 0, running = false;
     const $ = id => document.getElementById(id);
 
     // 싱잉볼/범종 느낌의 종소리: 여러 배음을 겹쳐 길게 사라지게 함
@@ -151,6 +207,7 @@ with tab_meditate:
       step(); breath = setInterval(step, 4000);
     }}
     function stop(done) {{
+      const sat = startedAt ? Math.floor((Date.now() - startedAt) / 60000) : 0;
       running = false;
       clearInterval(timer); clearInterval(breath);
       $('circle').style.transform = 'scale(0.6)';
@@ -158,12 +215,19 @@ with tab_meditate:
       if (done) {{
         const t = ctx.currentTime + 0.1;
         bell(t, 196); bell(t + 5, 196); bell(t + 10, 196);
-        $('guide').textContent = '🙏 출정(出定) — 수고하셨습니다. 고요함을 하루로 가져가세요.';
+        $('guide').textContent = '🙏 출정(出定) — 수고하셨습니다. 수행 기록에 남겼어요.';
         $('time').textContent = '00:00';
+        saveEntry({{ id: 'med-' + startedAt, kind: 'meditation', minutes: {minutes}, text: '{minutes}분 명상' }});
       }} else {{
-        $('guide').textContent = '잠시 멈추었습니다';
+        if (sat >= 1) {{
+          saveEntry({{ id: 'med-' + startedAt, kind: 'meditation', minutes: sat, text: sat + '분 명상 (도중에 마침)' }});
+          $('guide').textContent = sat + '분 앉았어요. 수행 기록에 남겼어요.';
+        }} else {{
+          $('guide').textContent = '잠시 멈추었습니다';
+        }}
         $('time').textContent = fmt(TOTAL);
       }}
+      startedAt = 0;
     }}
     $('btn').onclick = () => {{
       if (running) {{ stop(false); return; }}
@@ -182,7 +246,8 @@ with tab_meditate:
       $('guide').textContent = '종소리와 함께 마음을 내려놓습니다…';
       setTimeout(() => {{
         if (!running) return;
-        endAt = Date.now() + TOTAL * 1000;
+        startedAt = Date.now();
+        endAt = startedAt + TOTAL * 1000;
         startBreath();
         timer = setInterval(() => {{
           const left = Math.max(0, Math.round((endAt - Date.now()) / 1000));
@@ -193,17 +258,7 @@ with tab_meditate:
     }};
     </script>
     """
-    if hasattr(st, "iframe"):  # Streamlit 최신 버전
-        st.iframe(meditation_html, height=330)
-    else:
-        import streamlit.components.v1 as components
-        components.html(meditation_html, height=330)
-
-    if st.button("🙏 오늘의 명상을 기록하기"):
-        st.session_state.practice_log.append(
-            f"{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%H:%M')} · 🧘 {minutes}분 명상"
-        )
-        st.success("기록했어요. 꾸준함이 곧 수행입니다.")
+    render_html(meditation_html, height=330)
 
 # ---------------------------------------------------------------
 # 3. 불공 드리기 — 육법공양과 발원
@@ -256,17 +311,98 @@ with tab_offer:
                 f"{html.escape(wish.strip()).replace(chr(10), '<br>')}</div>",
                 unsafe_allow_html=True,
             )
-        st.session_state.practice_log.append(
-            f"{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%H:%M')} · 🕯️ 공양 ({icons})"
-            + (f" — {wish.strip()[:40]}" if wish.strip() else "")
-        )
+        record("offering", f"공양 ({icons})" + (f" — {wish.strip()}" if wish.strip() else ""))
 
 # ---------------------------------------------------------------
-# 4. 독경 — 반야심경 함께 읽기
+# 4. 독경 — 예불문 · 천수경 · 반야심경
 # ---------------------------------------------------------------
+YEBULMUN = """
+<h4>다게 (茶偈)</h4>
+아금청정수 변위감로다<br>봉헌삼보전 원수애납수<br>
+원수애납수 원수자비애납수
+
+<h4>오분향례 (五分香禮)</h4>
+계향 정향 혜향 해탈향 해탈지견향<br>
+광명운대 주변법계<br>공양시방 무량불법승
+
+<h4>헌향진언</h4>
+옴 바아라 도비야 훔 (세 번)
+
+<h4>칠정례 (七頂禮)</h4>
+지심귀명례 삼계도사 사생자부<br>시아본사 석가모니불<br><br>
+지심귀명례 시방삼세 제망찰해<br>상주일체 불타야중<br><br>
+지심귀명례 시방삼세 제망찰해<br>상주일체 달마야중<br><br>
+지심귀명례 대지문수사리보살 대행보현보살<br>대비관세음보살 대원본존지장보살마하살<br><br>
+지심귀명례 영산당시 수불부촉 십대제자<br>십육성 오백성 독수성 내지 천이백제대아라한<br>무량자비성중<br><br>
+지심귀명례 서건동진 급아해동<br>역대전등 제대조사 천하종사<br>일체미진수 제대선지식<br><br>
+지심귀명례 시방삼세 제망찰해<br>상주일체 승가야중
+
+<h4>축원</h4>
+유원 무진삼보 대자대비<br>수아정례 명훈가피력<br>
+원공법계제중생 자타일시성불도
+"""
+
+CHEONSUGYEONG = """
+<h4>정구업진언 (淨口業眞言)</h4>
+수리수리 마하수리 수수리 사바하 (세 번)
+
+<h4>오방내외안위제신진언</h4>
+나무 사만다 못다남 옴 도로도로 지미 사바하 (세 번)
+
+<h4>개경게 (開經偈)</h4>
+무상심심미묘법 백천만겁난조우<br>아금문견득수지 원해여래진실의
+
+<h4>개법장진언</h4>
+옴 아라남 아라다 (세 번)
+
+<h4>천수천안 관자재보살 광대원만 무애대비심 대다라니 계청</h4>
+계수관음대비주 원력홍심상호신<br>천비장엄보호지 천안광명변관조<br>
+진실어중선밀어 무위심내기비심<br>속령만족제희구 영사멸제제죄업<br>
+천룡중성동자호 백천삼매돈훈수<br>수지신시광명당 수지심시신통장<br>
+세척진로원제해 초증보리방편문<br>아금칭송서귀의 소원종심실원만<br><br>
+나무대비관세음 원아속지일체법<br>나무대비관세음 원아조득지혜안<br>
+나무대비관세음 원아속도일체중<br>나무대비관세음 원아조득선방편<br>
+나무대비관세음 원아속승반야선<br>나무대비관세음 원아조득월고해<br>
+나무대비관세음 원아속득계정도<br>나무대비관세음 원아조등원적산<br>
+나무대비관세음 원아속회무위사<br>나무대비관세음 원아조동법성신<br><br>
+아약향도산 도산자최절<br>아약향화탕 화탕자소멸<br>아약향지옥 지옥자고갈<br>
+아약향아귀 아귀자포만<br>아약향수라 악심자조복<br>아약향축생 자득대지혜<br><br>
+나무관세음보살마하살 나무대세지보살마하살<br>나무천수보살마하살 나무여의륜보살마하살<br>
+나무대륜보살마하살 나무관자재보살마하살<br>나무정취보살마하살 나무만월보살마하살<br>
+나무수월보살마하살 나무군다리보살마하살<br>나무십일면보살마하살 나무제대보살마하살<br>
+나무본사아미타불 (세 번)
+
+<h4>신묘장구대다라니 (神妙章句大陀羅尼)</h4>
+나모라 다나다라 야야 나막알약 바로기제 새바라야<br>모지 사다바야 마하 사다바야 마하 가로니가야<br>
+옴 살바 바예수 다라나 가라야 다사명<br>나막 까리다바 이맘 알야 바로기제 새바라 다바<br>
+니라간타 나막 하리나야 마발다 이사미<br>살발타 사다남 수반 아예염 살바 보다남<br>바바말아 미수다감<br>
+다냐타 옴 아로계 아로가 마지로가 지가란제<br>혜혜하례 마하모지 사다바 사마라 사마라 하리나야<br>
+구로구로 갈마 사다야 사다야 도로도로 미연제<br>마하 미연제 다라다라 다린나례 새바라<br>
+자라자라 마라 미마라 아마라 몰제 예혜혜<br>로계 새바라 라아 미사미 나사야<br>
+나베 사미사미 나사야 모하자라 미사미 나사야<br>
+호로호로 마라호로 하례 바나마 나바<br>사라사라 시리시리 소로소로 못쟈못쟈<br>
+모다야 모다야 매다리야 니라간타<br>가마사 날사남 바라하라 나야 마낙 사바하<br>
+싯다야 사바하 마하 싯다야 사바하<br>싯다유예 새바라야 사바하 니라간타야 사바하<br>
+바라하 목카 싱하 목카야 사바하<br>바나마 하따야 사바하 자가라 욕다야 사바하<br>
+상카 섭나 녜모 다나야 사바하<br>마하라 구타 다라야 사바하<br>
+바마 사간타 이사 시체다 가릿나 이나야 사바하<br>먀가라 잘마 이바 사나야 사바하<br>
+나모라 다나다라 야야 나막알약 바로기제 새바라야 사바하 (세 번)
+
+<h4>사방찬 (四方讚)</h4>
+일쇄동방결도량 이쇄남방득청량<br>삼쇄서방구정토 사쇄북방영안강
+
+<h4>도량찬 (道場讚)</h4>
+도량청정무하예 삼보천룡강차지<br>아금지송묘진언 원사자비밀가호
+
+<h4>참회게 (懺悔偈)</h4>
+아석소조제악업 개유무시탐진치<br>종신구의지소생 일체아금개참회
+
+<h4>참회진언</h4>
+옴 살바 못자모지 사다야 사바하 (세 번)
+"""
+
 HEART_SUTRA = """
-**마하반야바라밀다심경**
-
+<h4>마하반야바라밀다심경</h4>
 관자재보살 행심반야바라밀다시<br>조견오온개공 도일체고액<br><br>
 사리자 색불이공 공불이색<br>색즉시공 공즉시색<br>수상행식 역부여시<br><br>
 사리자 시제법공상<br>불생불멸 불구부정 부증불감<br><br>
@@ -276,28 +412,48 @@ HEART_SUTRA = """
 삼세제불 의반야바라밀다고<br>득아뇩다라삼먁삼보리<br><br>
 고지반야바라밀다<br>시대신주 시대명주 시무상주 시무등등주<br>능제일체고 진실불허<br><br>
 고설반야바라밀다주 즉설주왈<br><br>
-**아제아제 바라아제 바라승아제 모지 사바하**<br>
-**아제아제 바라아제 바라승아제 모지 사바하**<br>
-**아제아제 바라아제 바라승아제 모지 사바하**
+<b>아제아제 바라아제 바라승아제 모지 사바하</b><br>
+<b>아제아제 바라아제 바라승아제 모지 사바하</b><br>
+<b>아제아제 바라아제 바라승아제 모지 사바하</b>
 """
 
+SUTRAS = {
+    "🔔 예불문": (
+        YEBULMUN,
+        "새벽예불의 처음이에요. 맑은 물을 감로차 삼아 올리고, 불·법·승 삼보께 일곱 번 절하며 귀의합니다.",
+    ),
+    "🙏 천수경": (
+        CHEONSUGYEONG,
+        "입을 맑히는 진언으로 시작해, 관세음보살의 크신 자비에 기대어 참회하는 경이에요. "
+        "여기에는 참회진언까지 앞부분을 실었어요.",
+    ),
+    "🪷 반야심경": (
+        HEART_SUTRA,
+        "모든 것이 비어 있음(空)을 깨달아 괴로움에서 벗어나는 지혜를 담은, 가장 짧고 널리 읽히는 경이에요.",
+    ),
+}
+
 with tab_chant:
-    st.subheader("📿 반야심경 독송")
+    st.subheader("📿 독경")
     st.markdown(
-        "<p class='quiet'>소리 내어 천천히, 한 구절씩 읽어 보세요. 뜻을 몰라도 괜찮아요. "
+        "<p class='quiet'>새벽에는 예불문 → 천수경 → 반야심경 순서로 읽으면 좋아요. "
+        "소리 내어 천천히, 한 구절씩. 뜻을 몰라도 괜찮아요. "
         "읽는 동안 마음이 한곳에 머무는 것, 그것이 독경입니다.</p>",
         unsafe_allow_html=True,
     )
-    st.markdown(f"<div class='temple-card sutra'>{HEART_SUTRA}</div>", unsafe_allow_html=True)
+    sutra_name = st.radio("오늘 읽을 경전", list(SUTRAS.keys()), horizontal=True)
+    sutra_text, sutra_intro = SUTRAS[sutra_name]
+    st.markdown(f"<p class='quiet'>{sutra_intro}</p>", unsafe_allow_html=True)
+    st.markdown(f"<div class='temple-card sutra'>{sutra_text}</div>", unsafe_allow_html=True)
+    st.caption("※ 사찰과 경본에 따라 표기가 조금씩 다를 수 있어요. 다니시는 절의 경본을 따라 주세요.")
 
-    if st.button("📿 독송을 마쳤어요"):
-        st.session_state.practice_log.append(
-            f"{datetime.now(ZoneInfo('Asia/Seoul')).strftime('%H:%M')} · 📿 반야심경 독송"
-        )
-        st.success("수희찬탄합니다. 🙏")
+    plain_name = sutra_name.split(" ", 1)[1]
+    if st.button(f"📿 {plain_name} 독송을 마쳤어요"):
+        record("chant", f"{plain_name} 독송")
+        st.success("수희찬탄합니다. 🙏 수행 기록에 남겼어요.")
 
 # ---------------------------------------------------------------
-# 5. 오늘의 기록 + 한 줄 법문
+# 5. 수행 기록 — 날짜별로 계속 쌓이는 기록 (브라우저에 저장)
 # ---------------------------------------------------------------
 TEACHINGS = [
     "마음이 모든 것의 근본이다. 마음이 맑으면 세상도 맑아진다.",
@@ -309,21 +465,210 @@ TEACHINGS = [
     "스스로 등불을 삼고, 스스로를 의지하라.",
 ]
 
+LOG_VIEW_HTML = """
+<style>
+  body { margin:0; font-family:'Nanum Myeongjo',serif; color:#e8e2d6; }
+  .stats { display:flex; gap:10px; margin-bottom:14px; }
+  .stat { flex:1; background:rgba(255,255,255,.05); border:1px solid rgba(232,226,214,.15);
+          border-radius:12px; padding:10px 6px; text-align:center; }
+  .stat b { display:block; font-size:24px; color:#f3d9a4; }
+  .stat span { font-size:13px; color:#b8ae9c; }
+  .label { font-size:13px; color:#b8ae9c; margin:6px 0; }
+  .grid { display:grid; grid-template-columns:repeat(15, 1fr); gap:4px; margin-bottom:16px; }
+  .cell { aspect-ratio:1; border-radius:4px; background:rgba(255,255,255,.07); }
+  .cell.on { background:#c58b4e; }
+  .cell.today { outline:1px solid #f3d9a4; }
+  .day { margin:12px 0 4px; font-weight:bold; color:#f3d9a4; font-size:15px; }
+  .entry { font-size:14px; line-height:1.7; padding-left:6px; overflow-wrap:anywhere; }
+  .entry .t { color:#b8ae9c; margin-right:6px; }
+  .empty { color:#b8ae9c; font-size:14px; padding:18px 0; text-align:center; }
+  .list { max-height:250px; overflow-y:auto; padding-right:4px; }
+  .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  button { font-family:inherit; font-size:13px; border-radius:18px; padding:7px 14px; cursor:pointer;
+           background:rgba(255,255,255,.06); color:#e8e2d6; border:1px solid rgba(232,226,214,.35); }
+  button.danger { color:#e6a9a0; border-color:rgba(230,169,160,.4); }
+</style>
+<div class="stats">
+  <div class="stat"><b id="streak">0</b><span>연속 수행일</span></div>
+  <div class="stat"><b id="days">0</b><span>모든 수행일</span></div>
+  <div class="stat"><b id="mins">0</b><span>명상한 시간(분)</span></div>
+</div>
+<div class="label">최근 30일 · 수행한 날은 금빛으로 밝혀져요</div>
+<div class="grid" id="grid"></div>
+<div class="list" id="list"></div>
+<div class="actions">
+  <button id="dl">📥 수행일지 내려받기</button>
+  <button id="clear" class="danger">🗑 기록 모두 지우기</button>
+</div>
+<script>
+__STORE_JS__
+const ICON = { meditation: '🧘', offering: '🕯️', chant: '📿' };
+const $ = id => document.getElementById(id);
+let lastRaw = null;
+function shift(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function render(force) {
+  let raw = null;
+  try { raw = localStorage.getItem(SANSA_KEY); } catch (e) {}
+  const today = kstNow().date;
+  if (!force && raw === lastRaw + today) return;   // 바뀐 게 없으면 다시 그리지 않음
+  lastRaw = raw + today;
+  const log = loadLog();
+  const dates = new Set(log.map(e => e.date));
+
+  // 연속 수행일: 오늘(아직이면 어제)부터 거꾸로 하루씩 세기
+  let d = dates.has(today) ? today : shift(today, -1), streak = 0;
+  while (dates.has(d)) { streak++; d = shift(d, -1); }
+  $('streak').textContent = streak;
+  $('days').textContent = dates.size;
+  $('mins').textContent = log.reduce((s, e) => s + (e.kind === 'meditation' ? (e.minutes || 0) : 0), 0);
+
+  const grid = $('grid'); grid.innerHTML = '';
+  for (let i = 29; i >= 0; i--) {
+    const day = shift(today, -i), c = document.createElement('div');
+    c.className = 'cell' + (dates.has(day) ? ' on' : '') + (i === 0 ? ' today' : '');
+    c.title = day; grid.appendChild(c);
+  }
+
+  const list = $('list'); list.innerHTML = '';
+  if (!log.length) {
+    list.innerHTML = '<div class="empty">아직 기록이 없어요. 오늘의 첫 수행을 시작해 보세요. 🌱</div>';
+    return;
+  }
+  const byDate = {};
+  log.forEach(e => (byDate[e.date] = byDate[e.date] || []).push(e));
+  Object.keys(byDate).sort().reverse().forEach(day => {
+    const h = document.createElement('div');
+    h.className = 'day'; h.textContent = day === today ? day + ' (오늘)' : day;
+    list.appendChild(h);
+    byDate[day].sort((a, b) => a.time.localeCompare(b.time)).forEach(e => {
+      const row = document.createElement('div'), t = document.createElement('span');
+      row.className = 'entry'; t.className = 't'; t.textContent = e.time;
+      row.appendChild(t);
+      row.appendChild(document.createTextNode((ICON[e.kind] || '·') + ' ' + e.text));
+      list.appendChild(row);
+    });
+  });
+}
+$('dl').onclick = () => {
+  const log = loadLog().slice().sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  let out = '🪷 온라인 산사 수행일지\\n', last = '';
+  log.forEach(e => {
+    if (e.date !== last) { out += '\\n[' + e.date + ']\\n'; last = e.date; }
+    out += e.time + '  ' + (ICON[e.kind] || '·') + ' ' + e.text + '\\n';
+  });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([out], { type: 'text/plain;charset=utf-8' }));
+  a.download = '수행일지_' + kstNow().date + '.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+};
+$('clear').onclick = () => {
+  if (confirm('지금까지의 수행 기록을 모두 지울까요? 되돌릴 수 없어요.')) {
+    try { localStorage.removeItem(SANSA_KEY); } catch (e) {}
+    render(true);
+  }
+};
+render(true);
+// 명상을 마치거나 공양을 올리면 곧바로 반영
+window.addEventListener('storage', e => { if (e.key === SANSA_KEY) render(true); });
+setInterval(() => render(false), 2000);
+</script>
+""".replace("__STORE_JS__", STORE_JS)
+
 with tab_log:
-    st.subheader("📖 오늘의 수행 기록")
+    st.subheader("📖 나의 수행 기록")
     # 날짜마다 같은 법문이 나오도록 날짜를 씨앗으로 사용
     teaching = random.Random(now.strftime("%Y%m%d")).choice(TEACHINGS)
     st.markdown(f"<div class='temple-card'>🍃 <b>오늘의 법문</b><br>{teaching}</div>", unsafe_allow_html=True)
+    render_html(LOG_VIEW_HTML, height=560)
+    st.caption(
+        "※ 기록은 지금 쓰는 이 브라우저에만 저장되어 다른 사람은 볼 수 없어요. "
+        "브라우저 기록을 지우거나 다른 기기로 들어오면 보이지 않으니, 가끔 수행일지를 내려받아 두세요."
+    )
 
-    if st.session_state.practice_log:
-        for entry in st.session_state.practice_log:
-            st.markdown(f"- {entry}")
-        st.download_button(
-            "📥 수행일지 저장하기",
-            data=f"{now.strftime('%Y-%m-%d')} 수행일지\n\n" + "\n".join(st.session_state.practice_log),
-            file_name=f"수행일지_{now.strftime('%Y%m%d')}.txt",
+
+# ---------------------------------------------------------------
+# 6. 새벽 알림 — 휴대폰/PC 달력에 매일 반복되는 새벽예불 일정 추가
+# ---------------------------------------------------------------
+def build_ics(start: datetime, duration_min: int, remind_before: int) -> str:
+    stamp = datetime.now(ZoneInfo("UTC")).strftime("%Y%m%dT%H%M%SZ")
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Online Sansa//Dawn Practice//KO",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "BEGIN:VTIMEZONE",
+        "TZID:Asia/Seoul",
+        "BEGIN:STANDARD",
+        "DTSTART:19700101T000000",
+        "TZOFFSETFROM:+0900",
+        "TZOFFSETTO:+0900",
+        "TZNAME:KST",
+        "END:STANDARD",
+        "END:VTIMEZONE",
+        "BEGIN:VEVENT",
+        f"UID:online-sansa-dawn-{uuid.uuid4().hex}",
+        f"DTSTAMP:{stamp}",
+        f"DTSTART;TZID=Asia/Seoul:{start.strftime('%Y%m%dT%H%M00')}",
+        f"DURATION:PT{duration_min}M",
+        "RRULE:FREQ=DAILY",
+        "SUMMARY:🔔 새벽예불 · 온라인 산사",
+        "DESCRIPTION:온라인 산사에 들어가 예불문과 명상으로 하루를 여는 시간입니다. 🪷",
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        "DESCRIPTION:🔔 새벽예불 시간이에요",
+        f"TRIGGER:-PT{remind_before}M" if remind_before else "TRIGGER:PT0M",
+        "END:VALARM",
+        "END:VEVENT",
+        "END:VCALENDAR",
+    ]
+    return "\r\n".join(lines) + "\r\n"
+
+
+with tab_alarm:
+    st.subheader("🔔 매일 새벽예불 알림 받기")
+    st.markdown(
+        "<p class='quiet'>원하는 시각을 고르고 알림 파일을 내려받아 열면, 휴대폰이나 컴퓨터 달력에 "
+        "‘매일 반복되는 새벽예불 일정’이 추가돼요. 이 페이지를 열어 두지 않아도 달력 앱이 알려 줍니다.</p>",
+        unsafe_allow_html=True,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        alarm_time = st.time_input("예불 시각 (한국 시간)", value=datetime(2000, 1, 1, 4, 30).time(), step=300)
+        practice_len = st.select_slider("수행 시간 (분)", options=[10, 15, 20, 30, 45, 60], value=30)
+    with c2:
+        remind = st.radio("알림", ["정시에", "5분 전", "10분 전"], index=0)
+
+    remind_before = {"정시에": 0, "5분 전": 5, "10분 전": 10}[remind]
+
+    first = now.replace(hour=alarm_time.hour, minute=alarm_time.minute, second=0, microsecond=0)
+    if first <= now:
+        first += timedelta(days=1)
+
+    st.markdown(
+        f"<div class='temple-card'>📅 <b>{first.strftime('%m월 %d일')}</b>부터 매일 "
+        f"<b>{alarm_time.strftime('%H:%M')}</b>, {practice_len}분 동안 · 알림 {remind}</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.download_button(
+        "📅 달력에 새벽예불 추가하기 (.ics)",
+        data=build_ics(first, practice_len, remind_before).encode("utf-8"),
+        file_name=f"새벽예불_{alarm_time.strftime('%H%M')}.ics",
+        mime="text/calendar",
+        type="primary",
+    )
+
+    with st.expander("알림 파일은 어떻게 여나요?"):
+        st.markdown(
+            "- **아이폰**: 내려받은 파일을 누르면 ‘모두 추가’가 떠요. 누르면 캘린더에 들어가요.\n"
+            "- **안드로이드**: 파일을 누르고 ‘Google 캘린더’ 또는 ‘삼성 캘린더’로 열어 저장하세요.\n"
+            "- **컴퓨터**: Google 캘린더 → 설정 → 가져오기에서 파일을 올리거나, "
+            "Outlook·macOS 캘린더에서 파일을 바로 여세요.\n"
+            "- 시각을 바꾸고 싶다면 달력에서 기존 일정을 지우고 새 파일을 다시 추가하면 돼요."
         )
-    else:
-        st.markdown("<p class='quiet'>아직 기록이 없어요. 오늘의 첫 수행을 시작해 보세요.</p>", unsafe_allow_html=True)
-
-    st.caption("※ 기록은 이 창을 열어둔 동안에만 남아요. 매일 간직하고 싶다면 수행일지를 저장해 두세요.")
