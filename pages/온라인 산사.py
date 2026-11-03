@@ -137,6 +137,336 @@ tab_meditate, tab_offer, tab_chant, tab_log, tab_alarm = st.tabs(
 )
 
 # ---------------------------------------------------------------
+# 명상 타이머 + 명상 음악
+# 모든 소리(종·목탁·음악·자연의 소리)는 브라우저(Web Audio)에서 그때그때 만들어 낸다.
+# 그래서 음원 파일이 필요 없고, 저작권 걱정 없이 끝없이 이어진다.
+# ---------------------------------------------------------------
+MEDITATION_TEMPLATE = """
+<style>
+  body { margin:0; font-family:'Nanum Myeongjo',serif; color:#e8e2d6; }
+  .wrap { text-align:center; padding:6px 0; }
+  .music { display:flex; gap:10px; align-items:center; justify-content:center; flex-wrap:wrap;
+           background:rgba(255,255,255,.05); border:1px solid rgba(232,226,214,.15);
+           border-radius:12px; padding:10px 12px; margin:0 4px 6px; font-size:14px; }
+  select { font-family:inherit; font-size:14px; background:#1c2536; color:#e8e2d6;
+           border:1px solid rgba(232,226,214,.35); border-radius:8px; padding:5px 8px; }
+  input[type=range] { width:110px; accent-color:#c58b4e; }
+  .ghost { font-family:inherit; font-size:13px; border-radius:18px; padding:5px 12px; cursor:pointer;
+           background:rgba(255,255,255,.06); color:#e8e2d6; border:1px solid rgba(232,226,214,.35); }
+  #circle { width:120px; height:120px; margin:18px auto; border-radius:50%;
+            background:radial-gradient(circle,#f3d9a4 0%,#c58b4e 55%,rgba(197,139,78,0) 72%);
+            transform:scale(0.6); transition:transform 4s ease-in-out; opacity:.85; }
+  #guide { font-size:16px; min-height:24px; color:#b8ae9c; }
+  #time { font-size:42px; margin:8px 0 14px; letter-spacing:.08em; }
+  #btn { background:#c58b4e; color:#1c2536; border:none; border-radius:24px; padding:10px 28px;
+         font-size:16px; cursor:pointer; font-family:inherit; }
+</style>
+<div class="wrap">
+  <div class="music">
+    <label for="kind">🎵 명상 음악</label>
+    <select id="kind">
+      <option value="none">소리 없이 고요히</option>
+      <option value="drone">🎶 잔잔한 명상 음악</option>
+      <option value="chime">🎐 산사의 바람과 풍경 소리</option>
+      <option value="stream">💧 계곡 물소리</option>
+      <option value="rain">🌧️ 처마 끝 빗소리</option>
+    </select>
+    <span>🔉</span><input id="vol" type="range" min="0" max="100" value="60" aria-label="음악 크기">
+    <button id="preview" class="ghost">🎧 미리 듣기</button>
+  </div>
+  <div id="circle"></div>
+  <div id="guide">준비가 되면 시작하세요</div>
+  <div id="time">__MINUTES_PAD__:00</div>
+  <button id="btn">🔔 입정 (시작)</button>
+</div>
+<script>
+__STORE_JS__
+const TOTAL = __MINUTES__ * 60;
+const USE_MOKTAK = __MOKTAK__;
+let ctx = null, timer = null, breath = null, startedAt = 0, endAt = 0, running = false;
+let musicOut = null, music = null, previewing = false;
+const $ = id => document.getElementById(id);
+
+// ---- 음악 설정은 브라우저에 기억해 둔다 ----
+try {
+  $('kind').value = localStorage.getItem('online_sansa_music') || 'drone';
+  $('vol').value = localStorage.getItem('online_sansa_volume') || '60';
+} catch (e) {}
+
+function ensureCtx() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    musicOut = ctx.createGain();
+    musicOut.connect(ctx.destination);
+    setVolume();
+  }
+  ctx.resume();
+}
+function setVolume() {
+  if (!musicOut) return;
+  const v = $('vol').value / 100;
+  musicOut.gain.setTargetAtTime(v * v * 0.9, ctx.currentTime, 0.1);   // 귀에 자연스러운 곡선
+}
+
+// ---- 소리 재료들 ----
+function noiseBuffer(color) {
+  const len = ctx.sampleRate * 4, buf = ctx.createBuffer(1, len, ctx.sampleRate), d = buf.getChannelData(0);
+  let last = 0, b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    if (color === 'brown') { last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; }
+    else if (color === 'pink') {
+      b0 = 0.99765 * b0 + w * 0.099; b1 = 0.963 * b1 + w * 0.2965; b2 = 0.57 * b2 + w * 1.0527;
+      d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.12;
+    } else d[i] = w * 0.5;
+  }
+  return buf;
+}
+function loopNoise(color) {
+  const s = ctx.createBufferSource();
+  s.buffer = noiseBuffer(color); s.loop = true; s.start();
+  return s;
+}
+function reverb(seconds) {   // 넓은 법당 같은 울림
+  const len = ctx.sampleRate * seconds, ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
+  }
+  const conv = ctx.createConvolver(); conv.buffer = ir;
+  return conv;
+}
+function lfo(freq, depth, target) {   // 천천히 출렁이게
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.value = freq; g.gain.value = depth;
+  o.connect(g).connect(target); o.start();
+  return o;
+}
+function tone(dest, freq, t, amp, attack, release, type) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type || 'sine'; o.frequency.value = freq;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(amp, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + attack + release);
+  o.connect(g).connect(dest);
+  o.start(t); o.stop(t + attack + release + 0.1);
+}
+function every(minMs, maxMs, fn, timers) {   // 불규칙한 간격으로 되풀이
+  const loop = () => { fn(); timers.push(setTimeout(loop, minMs + Math.random() * (maxMs - minMs))); };
+  timers.push(setTimeout(loop, minMs * 0.3));
+}
+
+// ---- 네 가지 명상 음악 ----
+const MUSIC = {
+  // 낮은 지속음 위로 오음계의 맑은 음이 드문드문 떠오름
+  drone(out, nodes, timers) {
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 900;
+    const wet = ctx.createGain(); wet.gain.value = 0.7;
+    const rv = reverb(5); rv.connect(wet).connect(out);
+    lp.connect(out); lp.connect(rv);
+    [[98, 0.10, 'sine'], [146.83, 0.07, 'sine'], [196, 0.025, 'triangle']].forEach(([f, a, type], i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = type; o.frequency.value = f; g.gain.value = a;
+      o.connect(g).connect(lp); o.start();
+      nodes.push(o, lfo(0.05 + i * 0.03, a * 0.4, g.gain));
+    });
+    const scale = [392, 440, 493.88, 587.33, 659.25, 783.99];
+    every(3500, 8000, () => {
+      const f = scale[Math.floor(Math.random() * scale.length)], t = ctx.currentTime + 0.05;
+      tone(rv, f, t, 0.05, 1.2, 7);
+      tone(lp, f, t, 0.025, 1.2, 5);
+      if (Math.random() < 0.35) tone(rv, f * 1.5, t + 1.6, 0.025, 1.2, 6);
+    }, timers);
+  },
+  // 산바람이 불었다 잦아들고, 처마의 풍경이 가끔 울림
+  chime(out, nodes, timers) {
+    const n = loopNoise('brown'), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+    lp.type = 'lowpass'; lp.frequency.value = 500; g.gain.value = 0.35;
+    n.connect(lp).connect(g).connect(out);
+    nodes.push(n, lfo(0.07, 250, lp.frequency), lfo(0.04, 0.18, g.gain));
+    const rv = reverb(3); rv.connect(out);
+    const notes = [1046.5, 1174.7, 1318.5, 1568, 1760];
+    every(3000, 11000, () => {
+      let t = ctx.currentTime + 0.05;
+      const strikes = 1 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < strikes; i++) {
+        const f = notes[Math.floor(Math.random() * notes.length)];
+        [[1, 0.035], [2.76, 0.012], [5.4, 0.006]].forEach(([m, a]) => tone(rv, f * m, t, a, 0.005, 4 / m));
+        t += 0.25 + Math.random() * 0.6;
+      }
+    }, timers);
+  },
+  // 바위 사이를 흐르는 물소리
+  stream(out, nodes) {
+    const low = loopNoise('brown'), bp1 = ctx.createBiquadFilter(), g1 = ctx.createGain();
+    bp1.type = 'bandpass'; bp1.frequency.value = 500; bp1.Q.value = 0.4; g1.gain.value = 0.5;
+    low.connect(bp1).connect(g1).connect(out);
+    const hi = loopNoise('white'), bp2 = ctx.createBiquadFilter(), g2 = ctx.createGain();
+    bp2.type = 'bandpass'; bp2.frequency.value = 2200; bp2.Q.value = 1.2; g2.gain.value = 0.05;
+    hi.connect(bp2).connect(g2).connect(out);
+    nodes.push(low, hi, lfo(0.3, 700, bp2.frequency), lfo(0.13, 0.025, g2.gain), lfo(0.05, 150, bp1.frequency));
+  },
+  // 처마 끝에 떨어지는 빗소리
+  rain(out, nodes, timers) {
+    const n = loopNoise('pink'), hp = ctx.createBiquadFilter(), lp = ctx.createBiquadFilter(), g = ctx.createGain();
+    hp.type = 'highpass'; hp.frequency.value = 400; lp.type = 'lowpass'; lp.frequency.value = 5000;
+    g.gain.value = 0.55;
+    n.connect(hp).connect(lp).connect(g).connect(out);
+    nodes.push(n, lfo(0.03, 0.1, g.gain));
+    const dropBuf = noiseBuffer('white');
+    every(40, 260, () => {
+      const s = ctx.createBufferSource(), bp = ctx.createBiquadFilter(), dg = ctx.createGain(), t = ctx.currentTime;
+      s.buffer = dropBuf; bp.type = 'bandpass'; bp.frequency.value = 1500 + Math.random() * 3500; bp.Q.value = 4;
+      dg.gain.setValueAtTime(0.06 + Math.random() * 0.08, t);
+      dg.gain.exponentialRampToValueAtTime(0.0001, t + 0.04);
+      s.connect(bp).connect(dg).connect(out);
+      s.start(t, Math.random() * 3, 0.05);
+    }, timers);
+  },
+};
+
+function startMusic() {
+  stopMusic(0.5);
+  const kind = $('kind').value;
+  if (kind === 'none') return;
+  ensureCtx();
+  const fade = ctx.createGain(), nodes = [], timers = [];
+  fade.gain.setValueAtTime(0, ctx.currentTime);
+  fade.gain.linearRampToValueAtTime(1, ctx.currentTime + 5);   // 5초에 걸쳐 스며들 듯 시작
+  fade.connect(musicOut);
+  MUSIC[kind](fade, nodes, timers);
+  music = { fade, nodes, timers };
+}
+function stopMusic(fadeSec) {
+  if (!music) return;
+  const m = music; music = null;
+  m.timers.forEach(clearTimeout);
+  const t = ctx.currentTime;
+  m.fade.gain.cancelScheduledValues(t);
+  m.fade.gain.setValueAtTime(m.fade.gain.value, t);
+  m.fade.gain.linearRampToValueAtTime(0, t + fadeSec);
+  setTimeout(() => {
+    m.nodes.forEach(n => { try { n.stop(); } catch (e) {} });
+    m.fade.disconnect();
+  }, fadeSec * 1000 + 200);
+}
+
+$('kind').onchange = () => {
+  try { localStorage.setItem('online_sansa_music', $('kind').value); } catch (e) {}
+  if (running || previewing) {
+    startMusic();
+    if (previewing && $('kind').value === 'none') { previewing = false; $('preview').textContent = '🎧 미리 듣기'; }
+  }
+};
+$('vol').oninput = () => {
+  try { localStorage.setItem('online_sansa_volume', $('vol').value); } catch (e) {}
+  setVolume();
+};
+$('preview').onclick = () => {
+  if (running) return;
+  if (previewing) {
+    previewing = false; stopMusic(1.5); $('preview').textContent = '🎧 미리 듣기';
+  } else if ($('kind').value !== 'none') {
+    previewing = true; startMusic(); $('preview').textContent = '⏸ 그만 듣기';
+  }
+};
+
+// ---- 종과 목탁 ----
+// 싱잉볼/범종 느낌의 종소리: 여러 배음을 겹쳐 길게 사라지게 함
+function bell(t, base) {
+  [[1,0.5],[2.76,0.25],[5.4,0.12],[8.93,0.06]].forEach(([mul, amp]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = base * mul;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(amp, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 9 / Math.sqrt(mul));
+    o.connect(g).connect(ctx.destination);
+    o.start(t); o.stop(t + 10);
+  });
+}
+// 목탁: 짧고 둥근 나무 소리
+function knock(t) {
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.frequency.setValueAtTime(720, t);
+  o.frequency.exponentialRampToValueAtTime(480, t + 0.12);
+  g.gain.setValueAtTime(0.7, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+  o.connect(g).connect(ctx.destination);
+  o.start(t); o.stop(t + 0.2);
+}
+
+// ---- 명상 타이머 ----
+function fmt(s) {
+  return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+}
+function startBreath() {
+  let inhale = true;
+  const step = () => {
+    $('circle').style.transform = inhale ? 'scale(1.25)' : 'scale(0.6)';
+    $('guide').textContent = inhale ? '들이쉬고…' : '내쉬고…';
+    inhale = !inhale;
+  };
+  step(); breath = setInterval(step, 4000);
+}
+function stop(done) {
+  const sat = startedAt ? Math.floor((Date.now() - startedAt) / 60000) : 0;
+  running = false;
+  clearInterval(timer); clearInterval(breath);
+  $('circle').style.transform = 'scale(0.6)';
+  $('btn').textContent = '🔔 입정 (시작)';
+  $('preview').disabled = false;
+  if (done) {
+    stopMusic(8);   // 종소리와 함께 음악이 천천히 잦아듦
+    const t = ctx.currentTime + 0.1;
+    bell(t, 196); bell(t + 5, 196); bell(t + 10, 196);
+    $('guide').textContent = '🙏 출정(出定) — 수고하셨습니다. 수행 기록에 남겼어요.';
+    $('time').textContent = '00:00';
+    saveEntry({ id: 'med-' + startedAt, kind: 'meditation', minutes: TOTAL / 60, text: (TOTAL / 60) + '분 명상' });
+  } else {
+    stopMusic(2);
+    if (sat >= 1) {
+      saveEntry({ id: 'med-' + startedAt, kind: 'meditation', minutes: sat, text: sat + '분 명상 (도중에 마침)' });
+      $('guide').textContent = sat + '분 앉았어요. 수행 기록에 남겼어요.';
+    } else {
+      $('guide').textContent = '잠시 멈추었습니다';
+    }
+    $('time').textContent = fmt(TOTAL);
+  }
+  startedAt = 0;
+}
+$('btn').onclick = () => {
+  if (running) { stop(false); return; }
+  ensureCtx();
+  running = true;
+  if (previewing) { previewing = false; $('preview').textContent = '🎧 미리 듣기'; }
+  $('preview').disabled = true;
+  $('btn').textContent = '⏹ 멈추기';
+  let t = ctx.currentTime + 0.1, lead = 0;
+  if (USE_MOKTAK) {
+    // 점점 빨라졌다가 잦아드는 목탁 한 줄
+    const gaps = [0.9,0.8,0.7,0.6,0.5,0.4,0.32,0.26,0.22,0.2,0.2,0.2];
+    gaps.forEach(g => { knock(t + lead); lead += g; });
+    lead += 1.0;
+  }
+  bell(t + lead, 196); bell(t + lead + 6, 196); bell(t + lead + 12, 196);
+  $('guide').textContent = '종소리와 함께 마음을 내려놓습니다…';
+  setTimeout(() => {
+    if (!running) return;
+    startMusic();   // 종이 울린 뒤 음악이 서서히 피어남
+    startedAt = Date.now();
+    endAt = startedAt + TOTAL * 1000;
+    startBreath();
+    timer = setInterval(() => {
+      const left = Math.max(0, Math.round((endAt - Date.now()) / 1000));
+      $('time').textContent = fmt(left);
+      if (left <= 0) stop(true);
+    }, 500);
+  }, (lead + 1) * 1000);
+};
+</script>
+"""
+
+# ---------------------------------------------------------------
 # 2. 명상 — 타종으로 시작하고 끝나는 타이머 (소리는 브라우저에서 합성)
 #    끝까지 앉으면(또는 1분 이상 앉았다 멈추면) 수행 기록에 자동으로 남는다.
 # ---------------------------------------------------------------
@@ -145,6 +475,7 @@ with tab_meditate:
     st.markdown(
         "<p class='quiet'>허리를 곧게 펴고 편히 앉으세요. 시작하면 종이 세 번 울리고, "
         "시간이 다 되면 다시 종이 울립니다. 원이 커질 때 들이쉬고, 작아질 때 내쉬어요. "
+        "명상 음악을 고르면 종소리 뒤에 음악이 서서히 피어나고, 끝날 때 함께 잦아들어요. "
         "앉은 시간은 수행 기록에 저절로 남아요.</p>",
         unsafe_allow_html=True,
     )
@@ -155,110 +486,13 @@ with tab_meditate:
     with col2:
         moktak = st.toggle("시작 전 목탁 소리", value=True)
 
-    meditation_html = f"""
-    <div id="wrap" style="font-family:'Nanum Myeongjo',serif;color:#e8e2d6;text-align:center;padding:10px 0;">
-      <div id="circle" style="width:120px;height:120px;margin:20px auto;border-radius:50%;
-           background:radial-gradient(circle,#f3d9a4 0%,#c58b4e 55%,rgba(197,139,78,0) 72%);
-           transform:scale(0.6);transition:transform 4s ease-in-out;opacity:.85;"></div>
-      <div id="guide" style="font-size:16px;min-height:24px;color:#b8ae9c;">준비가 되면 시작하세요</div>
-      <div id="time" style="font-size:42px;margin:8px 0 14px;letter-spacing:.08em;">{minutes:02d}:00</div>
-      <button id="btn" style="background:#c58b4e;color:#1c2536;border:none;border-radius:24px;
-              padding:10px 28px;font-size:16px;cursor:pointer;font-family:inherit;">🔔 입정 (시작)</button>
-    </div>
-    <script>
-    {STORE_JS}
-    const TOTAL = {minutes} * 60;
-    const USE_MOKTAK = {str(moktak).lower()};
-    let ctx = null, timer = null, breath = null, startedAt = 0, endAt = 0, running = false;
-    const $ = id => document.getElementById(id);
-
-    // 싱잉볼/범종 느낌의 종소리: 여러 배음을 겹쳐 길게 사라지게 함
-    function bell(t, base) {{
-      [[1,0.5],[2.76,0.25],[5.4,0.12],[8.93,0.06]].forEach(([mul, amp]) => {{
-        const o = ctx.createOscillator(), g = ctx.createGain();
-        o.frequency.value = base * mul;
-        g.gain.setValueAtTime(0, t);
-        g.gain.linearRampToValueAtTime(amp, t + 0.01);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 9 / Math.sqrt(mul));
-        o.connect(g).connect(ctx.destination);
-        o.start(t); o.stop(t + 10);
-      }});
-    }}
-    // 목탁: 짧고 둥근 나무 소리
-    function knock(t) {{
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.setValueAtTime(720, t);
-      o.frequency.exponentialRampToValueAtTime(480, t + 0.12);
-      g.gain.setValueAtTime(0.7, t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-      o.connect(g).connect(ctx.destination);
-      o.start(t); o.stop(t + 0.2);
-    }}
-    function fmt(s) {{
-      return String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
-    }}
-    function startBreath() {{
-      let inhale = true;
-      const step = () => {{
-        $('circle').style.transform = inhale ? 'scale(1.25)' : 'scale(0.6)';
-        $('guide').textContent = inhale ? '들이쉬고…' : '내쉬고…';
-        inhale = !inhale;
-      }};
-      step(); breath = setInterval(step, 4000);
-    }}
-    function stop(done) {{
-      const sat = startedAt ? Math.floor((Date.now() - startedAt) / 60000) : 0;
-      running = false;
-      clearInterval(timer); clearInterval(breath);
-      $('circle').style.transform = 'scale(0.6)';
-      $('btn').textContent = '🔔 입정 (시작)';
-      if (done) {{
-        const t = ctx.currentTime + 0.1;
-        bell(t, 196); bell(t + 5, 196); bell(t + 10, 196);
-        $('guide').textContent = '🙏 출정(出定) — 수고하셨습니다. 수행 기록에 남겼어요.';
-        $('time').textContent = '00:00';
-        saveEntry({{ id: 'med-' + startedAt, kind: 'meditation', minutes: {minutes}, text: '{minutes}분 명상' }});
-      }} else {{
-        if (sat >= 1) {{
-          saveEntry({{ id: 'med-' + startedAt, kind: 'meditation', minutes: sat, text: sat + '분 명상 (도중에 마침)' }});
-          $('guide').textContent = sat + '분 앉았어요. 수행 기록에 남겼어요.';
-        }} else {{
-          $('guide').textContent = '잠시 멈추었습니다';
-        }}
-        $('time').textContent = fmt(TOTAL);
-      }}
-      startedAt = 0;
-    }}
-    $('btn').onclick = () => {{
-      if (running) {{ stop(false); return; }}
-      ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
-      ctx.resume();
-      running = true;
-      $('btn').textContent = '⏹ 멈추기';
-      let t = ctx.currentTime + 0.1, lead = 0;
-      if (USE_MOKTAK) {{
-        // 점점 빨라졌다가 잦아드는 목탁 한 줄
-        const gaps = [0.9,0.8,0.7,0.6,0.5,0.4,0.32,0.26,0.22,0.2,0.2,0.2];
-        gaps.forEach(g => {{ knock(t + lead); lead += g; }});
-        lead += 1.0;
-      }}
-      bell(t + lead, 196); bell(t + lead + 6, 196); bell(t + lead + 12, 196);
-      $('guide').textContent = '종소리와 함께 마음을 내려놓습니다…';
-      setTimeout(() => {{
-        if (!running) return;
-        startedAt = Date.now();
-        endAt = startedAt + TOTAL * 1000;
-        startBreath();
-        timer = setInterval(() => {{
-          const left = Math.max(0, Math.round((endAt - Date.now()) / 1000));
-          $('time').textContent = fmt(left);
-          if (left <= 0) stop(true);
-        }}, 500);
-      }}, (lead + 1) * 1000);
-    }};
-    </script>
-    """
-    render_html(meditation_html, height=330)
+    meditation_html = (
+        MEDITATION_TEMPLATE.replace("__STORE_JS__", STORE_JS)
+        .replace("__MINUTES__", str(minutes))
+        .replace("__MINUTES_PAD__", f"{minutes:02d}")
+        .replace("__MOKTAK__", str(moktak).lower())
+    )
+    render_html(meditation_html, height=420)
 
 # ---------------------------------------------------------------
 # 3. 불공 드리기 — 육법공양과 발원
